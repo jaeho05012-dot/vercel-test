@@ -1,4 +1,4 @@
-console.log("🔥 DEPLOY CHECK 123");
+
 import React, { useState } from "react";
 
 /* 공통 버튼 */
