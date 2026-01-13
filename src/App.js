@@ -1,3 +1,4 @@
+// vercel-force-redeploy
 import React, { useState } from "react";
 
 /* 공통 버튼 */
