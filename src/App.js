@@ -1,4 +1,3 @@
-// vercel-force-redeploy
 import React, { useState } from "react";
 
 /* 공통 버튼 */
@@ -12,19 +11,52 @@ const OptionButton = ({ active, onClick, children }) => (
       border: active ? "2px solid #000" : "1px solid #ddd",
       background: active ? "#000" : "#fff",
       color: active ? "#fff" : "#111",
-      cursor: "pointer",
-      transition: "all 0.2s"
+      cursor: "pointer"
     }}
   >
     {children}
   </button>
 );
 
-/* 수치 색상 판단 */
+/* 위험 수치 색상 */
 const levelColor = (value, limit) => {
   if (value > limit) return "red";
   if (value > limit * 0.7) return "orange";
   return "green";
+};
+
+/* 신뢰도 상태 */
+const confidenceStatus = (c) => {
+  if (c < 60) return { label: "❌ 불확실", color: "red" };
+  if (c < 80) return { label: "⚠️ 주의", color: "orange" };
+  return { label: "✅ 신뢰 가능", color: "green" };
+};
+
+/* 이미지 전처리 */
+const preprocessImage = async (file) => {
+  const img = new Image();
+  img.src = URL.createObjectURL(file);
+  await new Promise((res) => (img.onload = res));
+
+  const canvas = document.createElement("canvas");
+  const maxSize = 640;
+  let { width, height } = img;
+
+  if (width > height && width > maxSize) {
+    height *= maxSize / width;
+    width = maxSize;
+  } else if (height > maxSize) {
+    width *= maxSize / height;
+    height = maxSize;
+  }
+
+  canvas.width = width;
+  canvas.height = height;
+  canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+
+  return new Promise((resolve) =>
+    canvas.toBlob((b) => resolve(b), "image/jpeg", 0.85)
+  );
 };
 
 export default function App() {
@@ -35,49 +67,64 @@ export default function App() {
 
   const [gender, setGender] = useState("unknown");
   const [ageGroup, setAgeGroup] = useState("adult");
-  const [goal, setGoal] = useState("maintain");
-  const [mealTime, setMealTime] = useState("lunch");
+  const [mealTime, setMealTime] = useState("아침");
+  const [goal, setGoal] = useState("유지");
+
+  // ✅ 피드백 관련 state
+  const [feedback, setFeedback] = useState(null); // "yes" | "no"
+  const [feedbackReason, setFeedbackReason] = useState(null);
 
   const analyze = async () => {
-    if (!file) return alert("이미지를 선택하세요");
+    if (!file || loading) return;
 
     setLoading(true);
     setResult(null);
-
-    const fd = new FormData();
-    fd.append("image", file);
-    fd.append("gender", gender);
-    fd.append("age_group", ageGroup);
-    fd.append("goal", goal);
-    fd.append("meal_time", mealTime);
+    setFeedback(null);
+    setFeedbackReason(null);
 
     try {
-      const res = await fetch("http://127.0.0.1:8000/analyze", {
-        method: "POST",
-        body: fd
-      });
+      const fd = new FormData();
+      const processed = await preprocessImage(file);
 
-      if (!res.ok) throw new Error("server error");
+      fd.append("image", processed, "food.jpg");
+      fd.append("gender", gender);
+      fd.append("age_group", ageGroup);
+      fd.append("meal_time", mealTime);
+      fd.append("goal", goal);
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 35000);
+
+      const res = await fetch(
+        "https://luck-cal-backend-3.onrender.com/analyze",
+        {
+          method: "POST",
+          body: fd,
+          signal: controller.signal
+        }
+      );
+
+      clearTimeout(timeoutId);
+
+      if (!res.ok) throw new Error("AI 분석 실패");
+
       const data = await res.json();
-      setResult(data);
-    } catch {
-      /* 테스트용 더미 데이터 */
+
       setResult({
-        food: "양념치킨 + 콜라",
-        confidence: 88,
-        nutrition: {
-          calories: 1100,
-          protein: 40,
-          carbs: 100,
-          fat: 50,
-          fiber: 5,
-          sugar: 30,
-          sodium: 1200
-        },
+        food: data.food || "음식 인식 불확실",
+        confidence: typeof data.confidence === "number" ? data.confidence : 0,
+        nutrition: data.nutrition || null,
+        advice: data.advice || "AI 조언을 생성하지 못했습니다."
+      });
+    } catch (err) {
+      setResult({
+        food: "분석 실패",
+        confidence: 0,
+        nutrition: null,
         advice:
-          "현재 식사는 나트륨과 지방이 높은 편입니다. " +
-          "야식이나 다이어트 목적이라면 콜라를 제로 음료로 바꾸고 " +
-          "채소를 곁들이는 것이 좋습니다."
+          err.name === "AbortError"
+            ? "🤖 AI 응답이 지연되었습니다. 다시 시도해주세요."
+            : "이미지를 다시 촬영하거나 다른 음식으로 시도해 주세요."
       });
     } finally {
       setLoading(false);
@@ -88,84 +135,65 @@ export default function App() {
     setFile(null);
     setPreview(null);
     setResult(null);
+    setFeedback(null);
+    setFeedbackReason(null);
   };
 
   return (
-    <div
-      style={{
-        maxWidth: 420,
-        margin: "0 auto",
-        padding: 20,
-        fontFamily: "system-ui, sans-serif"
-      }}
-    >
-      <h2 style={{ textAlign: "center", marginBottom: 24 }}>
-        📸 음식 AI 분석
-      </h2>
+    <div style={{ maxWidth: 420, margin: "0 auto", padding: 20 }}>
+      <h2 style={{ textAlign: "center" }}>🍀 Luck Cal AI</h2>
+<p style={{ textAlign: "center", fontSize: 12, color: "#777", marginTop: 4 }}>
+  현재 베타 서비스 중입니다. AI 분석 결과는 참고용으로 활용해주세요.
+</p>
 
-      {/* 성별 */}
-      <div style={{ marginBottom: 20 }}>
-        <b>성별</b>
-        <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-          <OptionButton active={gender === "male"} onClick={() => setGender("male")}>남성</OptionButton>
-          <OptionButton active={gender === "female"} onClick={() => setGender("female")}>여성</OptionButton>
-          <OptionButton active={gender === "unknown"} onClick={() => setGender("unknown")}>공개 안 함</OptionButton>
-        </div>
+      <b>성별</b>
+      <div style={{ display: "flex", gap: 8 }}>
+        <OptionButton active={gender === "male"} onClick={() => setGender("male")}>남성</OptionButton>
+        <OptionButton active={gender === "female"} onClick={() => setGender("female")}>여성</OptionButton>
+        <OptionButton active={gender === "unknown"} onClick={() => setGender("unknown")}>공개안함</OptionButton>
       </div>
 
-      {/* 연령대 */}
-      <div style={{ marginBottom: 20 }}>
-        <b>연령대</b>
-        <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-          {["infant", "child", "teen", "adult"].map(v => (
-            <OptionButton key={v} active={ageGroup === v} onClick={() => setAgeGroup(v)}>
-              {v === "infant" && "유아"}
-              {v === "child" && "아동"}
-              {v === "teen" && "청소년"}
-              {v === "adult" && "성인"}
-            </OptionButton>
-          ))}
-        </div>
+      <b style={{ display: "block", marginTop: 16 }}>연령대</b>
+      <div style={{ display: "flex", gap: 8 }}>
+        {["infant", "child", "teen", "adult"].map(v => (
+          <OptionButton key={v} active={ageGroup === v} onClick={() => setAgeGroup(v)}>
+            {v === "infant" ? "유아" : v === "child" ? "아동" : v === "teen" ? "청소년" : "성인"}
+          </OptionButton>
+        ))}
       </div>
 
-      {/* 목표 */}
-      <div style={{ marginBottom: 20 }}>
-        <b>목표</b>
-        <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-          <OptionButton active={goal === "diet"} onClick={() => setGoal("diet")}>다이어트</OptionButton>
-          <OptionButton active={goal === "maintain"} onClick={() => setGoal("maintain")}>유지</OptionButton>
-          <OptionButton active={goal === "bulk"} onClick={() => setGoal("bulk")}>벌크업</OptionButton>
-        </div>
+      <b style={{ display: "block", marginTop: 16 }}>식사 시간대</b>
+      <div style={{ display: "flex", gap: 8 }}>
+        {["아침", "점심", "저녁", "야식"].map(t => (
+          <OptionButton key={t} active={mealTime === t} onClick={() => setMealTime(t)}>
+            {t}
+          </OptionButton>
+        ))}
       </div>
 
-      {/* 식사 시간 */}
-      <div style={{ marginBottom: 20 }}>
-        <b>식사 시간</b>
-        <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-          <OptionButton active={mealTime === "breakfast"} onClick={() => setMealTime("breakfast")}>아침</OptionButton>
-          <OptionButton active={mealTime === "lunch"} onClick={() => setMealTime("lunch")}>점심</OptionButton>
-          <OptionButton active={mealTime === "dinner"} onClick={() => setMealTime("dinner")}>저녁</OptionButton>
-          <OptionButton active={mealTime === "late"} onClick={() => setMealTime("late")}>야식</OptionButton>
-        </div>
+      <b style={{ display: "block", marginTop: 16 }}>목표</b>
+      <div style={{ display: "flex", gap: 8 }}>
+        {["다이어트", "유지", "벌크업"].map(g => (
+          <OptionButton key={g} active={goal === g} onClick={() => setGoal(g)}>
+            {g}
+          </OptionButton>
+        ))}
       </div>
 
-      {/* 이미지 업로드 */}
       <input
         type="file"
         accept="image/*"
+        style={{ marginTop: 16 }}
         onChange={(e) => {
           const f = e.target.files[0];
+          if (!f) return;
           setFile(f);
           setPreview(URL.createObjectURL(f));
         }}
       />
 
       {preview && (
-        <img
-          src={preview}
-          alt="preview"
-          style={{ width: "100%", marginTop: 12, borderRadius: 12 }}
-        />
+        <img src={preview} alt="preview" style={{ width: "100%", marginTop: 12, borderRadius: 12 }} />
       )}
 
       <button
@@ -179,55 +207,71 @@ export default function App() {
           background: "#000",
           color: "#fff",
           border: "none",
-          fontSize: 16
+          opacity: loading ? 0.7 : 1
         }}
       >
-        {loading ? "🔄 분석중..." : "분석하기"}
+        {loading ? "🔄 분석 중..." : "분석하기"}
       </button>
 
-      {/* 결과 */}
       {result && (
         <div style={{ marginTop: 24 }}>
           <h3>{result.food}</h3>
-          <div>AI 신뢰도: {result.confidence}%</div>
 
-          {/* 요약 카드 */}
-          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-            <div style={{ flex: 1, padding: 12, border: "1px solid #eee", borderRadius: 12 }}>
-              🔥<br />{result.nutrition.calories} kcal
-            </div>
-            <div style={{ flex: 1, padding: 12, border: "1px solid #eee", borderRadius: 12 }}>
-              💪<br />{result.nutrition.protein} g
-            </div>
-            <div style={{ flex: 1, padding: 12, border: "1px solid #eee", borderRadius: 12 }}>
-              ⚠️<br />
-              <span style={{ color: levelColor(result.nutrition.sodium, 1000) }}>
-                {result.nutrition.sodium} mg
-              </span>
-            </div>
+          <div style={{ color: confidenceStatus(result.confidence).color }}>
+            AI 신뢰도: {result.confidence}% ({confidenceStatus(result.confidence).label})
           </div>
 
-          {/* 상세 */}
-          <p style={{ marginTop: 16, lineHeight: 1.6 }}>
-            🤖 AI 조언<br />
-            {result.advice}
+          {result.nutrition && result.confidence >= 60 && (
+            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+              <div>🔥 {result.nutrition.calories} kcal</div>
+              <div>💪 {result.nutrition.protein} g</div>
+              <div style={{ color: levelColor(result.nutrition.sodium, 1000) }}>
+                ⚠️ {result.nutrition.sodium} mg
+              </div>
+            </div>
+          )}
+
+          <p style={{ marginTop: 12 }}>🤖 {result.advice}</p>
+
+          <p style={{ fontSize: 12, color: "#777" }}>
+            ※ AI 예측 결과이며 실제 음식과 다를 수 있습니다.
           </p>
 
-          <button
-            onClick={reset}
-            style={{
-              marginTop: 16,
-              width: "100%",
-              padding: 12,
-              borderRadius: 12,
-              border: "1px solid #ddd",
-              background: "#fff"
-            }}
-          >
-            🔁 다른 음식 분석하기
+          {/* 👍👎 피드백 */}
+          <div style={{ marginTop: 16 }}>
+            {!feedback ? (
+              <>
+                <p>도움이 되셨나요?</p>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button onClick={() => setFeedback("yes")}>👍 네</button>
+                  <button onClick={() => setFeedback("no")}>👎 아니요</button>
+                </div>
+              </>
+            ) : feedback === "no" && !feedbackReason ? (
+              <>
+                <p style={{ marginTop: 8 }}>어떤 점이 아쉬웠나요?</p>
+                {["음식 인식이 틀림", "영양 수치가 이상함", "조언이 별로임", "기타"].map(r => (
+                  <button
+                    key={r}
+                    onClick={() => setFeedbackReason(r)}
+                    style={{ display: "block", marginTop: 6 }}
+                  >
+                    {r}
+                  </button>
+                ))}
+              </>
+            ) : (
+              <p style={{ marginTop: 8, color: "#555" }}>
+                🙏 피드백 감사합니다!
+              </p>
+            )}
+          </div>
+
+          <button onClick={reset} style={{ marginTop: 12 }}>
+            🔁 다시 분석
           </button>
         </div>
       )}
     </div>
   );
-}  
+}
